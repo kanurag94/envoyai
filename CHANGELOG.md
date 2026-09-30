@@ -117,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differentiators, and a flat index of `examples/`.
 - Smoke tests covering the public surface and the README example.
 
+### Fixed
+- A provider `base_url` with an IP address (for example
+  `http://127.0.0.1:8000/v1` for a local vLLM or Ollama) now renders an `ip`
+  Backend endpoint instead of `fqdn`. Envoy Gateway resolves `fqdn` through
+  DNS, so these requests failed with HTTP 500. `https://` with an IP address
+  raises `ConfigError`, because upstream TLS verification needs a hostname.
+
 ### Changed
 - `Gateway` no longer takes a required `namespace`; the `namespace` kwarg
   moved to `render_k8s()` / `apply()` / `deploy()` / `diff()` where the

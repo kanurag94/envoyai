@@ -445,3 +445,39 @@ def test_fallback_split_not_supported_yet() -> None:
     )
     with pytest.raises(NotImplementedError, match="Split"):
         render_resources(gw)
+
+
+def _backend_endpoint(base_url: str) -> dict:
+    gw = ea.Gateway("team-a")
+    gw.model("chat").route(
+        primary=ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"), base_url=base_url)("m")
+    )
+    (backend,) = [
+        r
+        for r in render_resources(gw)
+        if r["kind"] == "Backend" and r["apiVersion"].startswith("gateway.envoyproxy.io")
+    ]
+    return backend["spec"]["endpoints"][0]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "address", "port"),
+    [
+        ("http://127.0.0.1:8000/v1", "127.0.0.1", 8000),
+        ("http://10.0.0.7", "10.0.0.7", 80),
+        ("http://[::1]:11434", "::1", 11434),
+    ],
+)
+def test_ip_literal_base_url_renders_ip_endpoint(base_url: str, address: str, port: int) -> None:
+    assert _backend_endpoint(base_url) == {"ip": {"address": address, "port": port}}
+
+
+def test_hostname_base_url_still_renders_fqdn_endpoint() -> None:
+    assert _backend_endpoint("http://localhost:8000") == {
+        "fqdn": {"hostname": "localhost", "port": 8000}
+    }
+
+
+def test_https_ip_literal_base_url_is_rejected() -> None:
+    with pytest.raises(ea.errors.ConfigError, match="IP address"):
+        _backend_endpoint("https://10.0.0.7")

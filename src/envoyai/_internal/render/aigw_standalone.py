@@ -13,6 +13,7 @@ Secrets use ``${VAR}`` placeholders so ``aigw run`` resolves them via
 """
 from __future__ import annotations
 
+import ipaddress
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -20,6 +21,7 @@ from urllib.parse import urlparse
 import yaml
 
 from envoyai.auth import EnvVar
+from envoyai.errors import ConfigError
 from envoyai.policy import RetryPolicy
 from envoyai.providers.anthropic import Anthropic
 from envoyai.providers.base import ModelRef
@@ -291,6 +293,13 @@ def _provider_resources(
 ) -> list[dict[str, Any]]:
     spec = _API_KEY_PROVIDERS[type(provider)]
     hostname, port, is_tls = _parse_url(provider.base_url, default_host=spec.default_hostname)
+    is_ip = _is_ip_literal(hostname)
+    if is_ip and is_tls:
+        raise ConfigError(
+            f"provider base_url {provider.base_url!r} is https:// with an IP "
+            "address; upstream TLS verification needs a hostname. Use a DNS "
+            "name, or http:// for a local server"
+        )
     secret_name = f"{backend_name}-apikey"
     env_var = provider.api_key
     assert isinstance(env_var, EnvVar)
@@ -331,7 +340,13 @@ def _provider_resources(
             "apiVersion": "gateway.envoyproxy.io/v1alpha1",
             "kind": "Backend",
             "metadata": {"name": backend_name, "namespace": namespace},
-            "spec": {"endpoints": [{"fqdn": {"hostname": hostname, "port": port}}]},
+            # Envoy Gateway resolves an ``fqdn`` endpoint through DNS; an IP
+            # literal there never resolves and requests fail with a 500. IPs
+            # go in an ``ip`` endpoint instead.
+            "spec": {"endpoints": [
+                {"ip": {"address": hostname, "port": port}} if is_ip
+                else {"fqdn": {"hostname": hostname, "port": port}}
+            ]},
         },
     ]
     
@@ -500,6 +515,14 @@ def _retry_on(policy: RetryPolicy) -> dict[str, Any]:
     if not out:
         out["triggers"] = ["reset"]
     return out
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _parse_url(base_url: str, *, default_host: str) -> tuple[str, int, bool]:

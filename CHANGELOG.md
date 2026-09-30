@@ -117,6 +117,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differentiators, and a flat index of `examples/`.
 - Smoke tests covering the public surface and the README example.
 
+### Fixed
+- `RetryPolicy` with the `rate_limit` reason (including the default
+  `RetryPolicy()` and `RetryPolicy.rate_limit_tolerant()`) no longer emits
+  the `envoy-ratelimited` retry trigger. Envoy Gateway does not accept it, and
+  aigw never brought the listener up. 429s are still retried through
+  `retriable-status-codes`. A test now pins every rendered trigger to the set
+  Envoy Gateway accepts.
+
 ### Changed
 - `Gateway` no longer takes a required `namespace`; the `namespace` kwarg
   moved to `render_k8s()` / `apply()` / `deploy()` / `diff()` where the

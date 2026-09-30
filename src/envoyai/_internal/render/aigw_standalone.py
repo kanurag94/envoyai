@@ -402,12 +402,22 @@ def _gateway_class_cr(name: str) -> dict[str, Any]:
 
 
 # Per-reason translation into Envoy retry-on triggers + HTTP status codes.
-# Keys are :data:`envoyai.policy.RetryReason` values. ``envoy-ratelimited``
-# is emitted for rate_limit because Envoy raises it when an upstream sends
-# 429 or RateLimit-Reset headers; ``retriable-status-codes`` is required to
-# actually retry on anything listed in ``httpStatusCodes``.
+# Keys are :data:`envoyai.policy.RetryReason` values. Every trigger must be in
+# :data:`_EG_RETRY_TRIGGERS`: Envoy Gateway rejects anything else, and aigw
+# then never programs the listener. An upstream 429 is retried through
+# ``retriable-status-codes`` + ``httpStatusCodes: [429]``; that trigger is also
+# required to retry on anything listed in ``httpStatusCodes``.
+# The retry triggers Envoy Gateway accepts (BackendTrafficPolicy
+# ``retry.retryOn.triggers``; mirrors the TriggerEnum kubebuilder enum and the
+# lookup table in its xDS translator).
+_EG_RETRY_TRIGGERS: frozenset[str] = frozenset({
+    "5xx", "gateway-error", "reset", "reset-before-request", "connect-failure",
+    "retriable-4xx", "refused-stream", "retriable-status-codes", "cancelled",
+    "deadline-exceeded", "internal", "resource-exhausted", "unavailable",
+})
+
 _REASON_MAP: dict[str, tuple[list[str], list[int]]] = {
-    "rate_limit": (["envoy-ratelimited", "retriable-status-codes"], [429]),
+    "rate_limit": (["retriable-status-codes"], [429]),
     "server_error": (["retriable-status-codes"], [500, 502, 503, 504]),
     "timeout": (["retriable-status-codes"], [504]),
     "connection_error": (["connect-failure", "reset", "refused-stream"], []),

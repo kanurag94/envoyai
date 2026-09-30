@@ -10,7 +10,12 @@ import pytest
 import yaml
 
 import envoyai as ea
-from envoyai._internal.render.aigw_standalone import render_resources, render_yaml
+from envoyai._internal.render.aigw_standalone import (
+    _EG_RETRY_TRIGGERS,
+    _REASON_MAP,
+    render_resources,
+    render_yaml,
+)
 
 
 def _openai_gateway() -> ea.Gateway:
@@ -327,7 +332,9 @@ def test_retry_policy_rate_limit_reasons_map_to_429() -> None:
     (btp,) = [r for r in render_resources(gw) if r["kind"] == "BackendTrafficPolicy"]
     retry_on = btp["spec"]["retry"]["retryOn"]
     assert retry_on["httpStatusCodes"] == [429]
-    assert "envoy-ratelimited" in retry_on["triggers"]
+    # Envoy Gateway has no ``envoy-ratelimited`` trigger; emitting it makes
+    # aigw fail to program the route.
+    assert "envoy-ratelimited" not in retry_on["triggers"]
     # retriable-status-codes is required for any listed httpStatusCodes to
     # actually trigger a retry.
     assert "retriable-status-codes" in retry_on["triggers"]
@@ -445,3 +452,22 @@ def test_fallback_split_not_supported_yet() -> None:
     )
     with pytest.raises(NotImplementedError, match="Split"):
         render_resources(gw)
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        ea.RetryPolicy(),
+        ea.RetryPolicy.rate_limit_tolerant(),
+        ea.RetryPolicy.fail_fast(),
+        ea.RetryPolicy.none(),
+        *[ea.RetryPolicy(on=[reason]) for reason in _REASON_MAP],
+    ],
+)
+def test_retry_triggers_are_accepted_by_envoy_gateway(policy: ea.RetryPolicy) -> None:
+    openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
+    gw = ea.Gateway("team-a")
+    gw.model("chat").route(primary=openai("gpt-4o"), retry=policy)
+    (btp,) = [r for r in render_resources(gw) if r["kind"] == "BackendTrafficPolicy"]
+    triggers = set(btp["spec"]["retry"]["retryOn"].get("triggers", []))
+    assert triggers <= _EG_RETRY_TRIGGERS, triggers - _EG_RETRY_TRIGGERS

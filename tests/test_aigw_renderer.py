@@ -24,9 +24,9 @@ def _openai_gateway() -> ea.Gateway:
 def test_renders_expected_kinds() -> None:
     resources = render_resources(_openai_gateway())
     kinds = [r["kind"] for r in resources]
-    # AIGatewayRoute, then provider stack, then Gateway CR.
+    # AIGatewayRoute, then provider stack, then the Gateway and its class.
     assert kinds[0] == "AIGatewayRoute"
-    assert kinds[-1] == "Gateway"
+    assert kinds[-2:] == ["Gateway", "GatewayClass"]
     assert {
         "AIServiceBackend",
         "BackendSecurityPolicy",
@@ -123,7 +123,7 @@ def test_anthropic_renders_expected_kinds() -> None:
     resources = render_resources(_anthropic_gateway())
     kinds = [r["kind"] for r in resources]
     assert kinds[0] == "AIGatewayRoute"
-    assert kinds[-1] == "Gateway"
+    assert kinds[-2:] == ["Gateway", "GatewayClass"]
     assert {
         "AIServiceBackend",
         "BackendSecurityPolicy",
@@ -445,3 +445,10 @@ def test_fallback_split_not_supported_yet() -> None:
     )
     with pytest.raises(NotImplementedError, match="Split"):
         render_resources(gw)
+
+
+def test_gateway_references_the_rendered_gateway_class() -> None:
+    resources = render_resources(_openai_gateway())
+    (gateway,) = [r for r in resources if r["kind"] == "Gateway"]
+    (gateway_class,) = [r for r in resources if r["kind"] == "GatewayClass"]
+    assert gateway["spec"]["gatewayClassName"] == gateway_class["metadata"]["name"]

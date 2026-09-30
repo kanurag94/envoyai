@@ -117,6 +117,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differentiators, and a flat index of `examples/`.
 - Smoke tests covering the public surface and the README example.
 
+### Added
+- Weighted `Split` rendering. `primary={a: 9, b: 1}` and Split dicts inside
+  `fallbacks=[...]` render as AIGatewayRoute backendRefs with `weight`; with
+  fallbacks, each tier's refs share a `priority`, so traffic splits by weight
+  within the lowest healthy tier. The same provider can appear twice with
+  different models, as in `examples/04_canary.py` (verified against aigw
+  0.5.0: 1000 requests split 899/101 for a 9:1 canary). Invalid Split shapes
+  and weights raise `ConfigError`.
+
 ### Changed
 - `Gateway` no longer takes a required `namespace`; the `namespace` kwarg
   moved to `render_k8s()` / `apply()` / `deploy()` / `diff()` where the

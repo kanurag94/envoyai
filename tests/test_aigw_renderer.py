@@ -221,12 +221,87 @@ def test_unsupported_provider_lists_what_is_supported() -> None:
     assert "Anthropic" in msg
 
 
-def test_split_primary_not_supported_yet() -> None:
+def _rule(gw: ea.Gateway) -> dict:
+    (route,) = [r for r in render_resources(gw) if r["kind"] == "AIGatewayRoute"]
+    (rule,) = route["spec"]["rules"]
+    return rule
+
+
+def test_split_primary_renders_weighted_backend_refs() -> None:
     openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
     gw = ea.Gateway("team-a")
-    gw.model("chat").route(primary={openai("gpt-4o"): 9, openai("gpt-4o-mini"): 1})
-    with pytest.raises(NotImplementedError, match="Split"):
+    gw.model("chat").route(
+        primary={openai("gpt-4o-2024-08-06"): 9, openai("gpt-4o-2024-11-20"): 1}
+    )
+    assert _rule(gw)["backendRefs"] == [
+        {"name": "team-a-openai", "modelNameOverride": "gpt-4o-2024-08-06", "weight": 9},
+        {"name": "team-a-openai", "modelNameOverride": "gpt-4o-2024-11-20", "weight": 1},
+    ]
+
+
+def test_split_across_providers_registers_each_backend() -> None:
+    openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
+    anthropic = ea.Anthropic(api_key=ea.env("ANTHROPIC_API_KEY"))
+    gw = ea.Gateway("team-a")
+    gw.model("chat").route(primary={openai("gpt-4o"): 3, anthropic("claude-sonnet-4"): 1})
+    refs = _rule(gw)["backendRefs"]
+    assert [(r["name"], r["weight"]) for r in refs] == [
+        ("team-a-openai", 3),
+        ("team-a-anthropic", 1),
+    ]
+    assert all("priority" not in r for r in refs)
+    kinds = [r["kind"] for r in render_resources(gw)]
+    assert kinds.count("AIServiceBackend") == 2
+
+
+def test_single_model_ref_has_no_weight() -> None:
+    openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
+    gw = ea.Gateway("team-a")
+    gw.model("chat").route(primary=openai("gpt-4o"))
+    assert "weight" not in _rule(gw)["backendRefs"][0]
+
+
+@pytest.mark.parametrize(
+    ("split", "match"),
+    [
+        ({}, "non-empty Split"),
+        ("gpt-4o", "non-empty Split"),
+        (None, "non-empty Split"),
+    ],
+)
+def test_invalid_split_shapes_are_rejected(split: object, match: str) -> None:
+    gw = ea.Gateway("team-a")
+    route = gw.model("chat")
+    route._primary = split
+    with pytest.raises((ea.errors.ConfigError, NotImplementedError), match=match + "|no primary"):
         render_resources(gw)
+
+
+@pytest.mark.parametrize("weight", [-1, 1.5, True, "9"])
+def test_invalid_split_weights_are_rejected(weight: object) -> None:
+    openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
+    gw = ea.Gateway("team-a")
+    gw.model("chat").route(primary={openai("gpt-4o"): weight, openai("gpt-4o-mini"): 1})
+    with pytest.raises(ea.errors.ConfigError, match="non-negative int"):
+        render_resources(gw)
+
+
+def test_all_zero_split_weights_are_rejected() -> None:
+    openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
+    gw = ea.Gateway("team-a")
+    gw.model("chat").route(primary={openai("gpt-4o"): 0, openai("gpt-4o-mini"): 0})
+    with pytest.raises(ea.errors.ConfigError, match="all zero"):
+        render_resources(gw)
+
+
+def test_canary_example_renders() -> None:
+    import runpy
+    from pathlib import Path
+    from unittest import mock
+
+    example = Path(__file__).parent.parent / "examples" / "04_canary.py"
+    with mock.patch.object(ea.Gateway, "local", lambda self, **_: render_resources(self)):
+        runpy.run_path(str(example))
 
 
 # ---------------------------------------------------------------------------
@@ -436,12 +511,16 @@ def test_same_retry_policy_across_routes_is_fine() -> None:
     assert len(btps) == 1
 
 
-def test_fallback_split_not_supported_yet() -> None:
+def test_split_in_fallback_shares_priority_and_carries_weight() -> None:
     openai = ea.OpenAI(api_key=ea.env("OPENAI_API_KEY"))
+    anthropic = ea.Anthropic(api_key=ea.env("ANTHROPIC_API_KEY"))
     gw = ea.Gateway("team-a")
     gw.model("chat").route(
         primary=openai("gpt-4o"),
-        fallbacks=[{openai("gpt-4o-mini"): 9, openai("gpt-3.5-turbo"): 1}],
+        fallbacks=[{anthropic("claude-sonnet-4"): 9, openai("gpt-4o-mini"): 1}],
     )
-    with pytest.raises(NotImplementedError, match="Split"):
-        render_resources(gw)
+    assert _rule(gw)["backendRefs"] == [
+        {"name": "team-a-openai", "modelNameOverride": "gpt-4o", "priority": 0},
+        {"name": "team-a-anthropic", "modelNameOverride": "claude-sonnet-4", "weight": 9, "priority": 1},
+        {"name": "team-a-openai", "modelNameOverride": "gpt-4o-mini", "weight": 1, "priority": 1},
+    ]

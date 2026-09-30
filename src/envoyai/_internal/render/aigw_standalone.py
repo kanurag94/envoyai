@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import yaml
 
 from envoyai.auth import EnvVar
+from envoyai.errors import ConfigError
 from envoyai.policy import RetryPolicy
 from envoyai.providers.anthropic import Anthropic
 from envoyai.providers.base import ModelRef
@@ -97,21 +98,15 @@ def render_resources(gateway: Any, *, namespace: str = "default") -> list[dict[s
     for logical, route in gateway._routes.items():
         _reject_unsupported_route(logical, route)
 
-        primary = route._primary
-        assert isinstance(primary, ModelRef)
-        primary_backend = _register_backend(gateway_name, primary.provider, backends)
+        tiers: list[list[tuple[ModelRef, str, int | None]]] = []
+        for spec in [route._primary, *route._fallbacks]:
+            tiers.append([
+                (ref, _register_backend(gateway_name, ref.provider, backends), weight)
+                for ref, weight in _split_entries(spec)
+            ])
 
-        fallback_pairs: list[tuple[ModelRef, str]] = []
-        for fb in route._fallbacks:
-            assert isinstance(fb, ModelRef)  # Split is rejected above
-            fb_backend = _register_backend(gateway_name, fb.provider, backends)
-            fallback_pairs.append((fb, fb_backend))
-
-        rule_docs.append(
-            _route_rule(logical, primary, primary_backend, fallback_pairs)
-        )
-
-        if fallback_pairs:
+        rule_docs.append(_route_rule(logical, tiers))
+        if len(tiers) > 1:
             any_fallbacks = True
 
         if route._retry is not None:
@@ -143,17 +138,26 @@ def render_resources(gateway: Any, *, namespace: str = "default") -> list[dict[s
 def _reject_unsupported_route(logical: str, route: Any) -> None:
     if route._primary is None:
         raise _not_supported(f"model '{logical}' has no primary backend")
-    if not isinstance(route._primary, ModelRef):
-        raise _not_supported(
-            f"model '{logical}' uses a weighted Split for primary; the aigw "
-            "renderer only supports a single ModelRef per primary today"
-        )
-    for i, fb in enumerate(route._fallbacks):
-        if not isinstance(fb, ModelRef):
-            raise _not_supported(
-                f"model '{logical}' fallback #{i} uses a weighted Split; the "
-                "aigw renderer only supports a single ModelRef per fallback today"
+    for where, spec in [("primary", route._primary)] + [
+        (f"fallback #{i}", fb) for i, fb in enumerate(route._fallbacks)
+    ]:
+        if isinstance(spec, ModelRef):
+            continue
+        if not isinstance(spec, dict) or not spec:
+            raise ConfigError(
+                f"model '{logical}' {where} must be a ModelRef or a non-empty "
+                "Split dict of {ModelRef: weight}"
             )
+        for ref, weight in spec.items():
+            if not isinstance(ref, ModelRef):
+                raise ConfigError(f"model '{logical}' {where}: Split keys must be ModelRefs")
+            if isinstance(weight, bool) or not isinstance(weight, int) or weight < 0:
+                raise ConfigError(
+                    f"model '{logical}' {where}: Split weight for {ref.model!r} "
+                    f"must be a non-negative int, got {weight!r}"
+                )
+        if not any(spec.values()):
+            raise ConfigError(f"model '{logical}' {where}: Split weights are all zero")
     if route._budget is not None:
         raise _not_supported(
             f"model '{logical}' has a Budget; budget rendering lands later"
@@ -220,28 +224,39 @@ def _backend_name(
     return provider.name or f"{gateway_name}-{spec.backend_slug}"
 
 
+def _split_entries(spec: Any) -> list[tuple[ModelRef, int | None]]:
+    """Flatten a primary/fallback spec into ``(ref, weight)`` pairs.
+
+    A bare ``ModelRef`` has no weight (``None``); a ``Split`` dict keeps the
+    weight the user gave each ref.
+    """
+    if isinstance(spec, ModelRef):
+        return [(spec, None)]
+    return list(spec.items())
+
+
 def _route_rule(
     logical: str,
-    primary_ref: ModelRef,
-    primary_backend: str,
-    fallback_pairs: list[tuple[ModelRef, str]],
+    tiers: list[list[tuple[ModelRef, str, int | None]]],
 ) -> dict[str, Any]:
     """Build one rule on the AIGatewayRoute.
 
-    With no fallbacks the rule has a single backendRef (no ``priority``
-    field — the Gateway API's implicit default). With fallbacks every
-    backendRef gets an explicit ``priority`` (primary = 0, first fallback =
-    1, etc.) so aigw's retry walk is unambiguous.
+    ``tiers[0]`` is the primary, each later tier a fallback. A tier with
+    several entries is a weighted ``Split``: its backendRefs share a
+    ``priority`` and carry ``weight``. With no fallbacks there is no
+    ``priority`` field (the Gateway API's implicit default); with fallbacks
+    every backendRef gets one (primary = 0, first fallback = 1, ...) so
+    aigw's retry walk is unambiguous. ``weight`` and ``priority`` combine:
+    traffic is split by weight within the lowest healthy priority.
     """
-    primary_entry = _backend_ref(logical, primary_ref, primary_backend)
-    if not fallback_pairs:
-        backend_refs: list[dict[str, Any]] = [primary_entry]
-    else:
-        primary_entry["priority"] = 0
-        backend_refs = [primary_entry]
-        for i, (ref, name) in enumerate(fallback_pairs, start=1):
-            entry = _backend_ref(logical, ref, name)
-            entry["priority"] = i
+    backend_refs: list[dict[str, Any]] = []
+    for priority, tier in enumerate(tiers):
+        for ref, backend_name, weight in tier:
+            entry = _backend_ref(logical, ref, backend_name)
+            if len(tier) > 1:
+                entry["weight"] = weight
+            if len(tiers) > 1:
+                entry["priority"] = priority
             backend_refs.append(entry)
     return {
         "matches": [

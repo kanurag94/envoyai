@@ -122,11 +122,12 @@ Same `Gateway` config drives all three.
 |---|---|
 | **Providers** — `OpenAI`, `Anthropic` (native API), coexisting in one `Gateway` | ✅ ready |
 | **Auth** — `ea.env(...)` rendered as `${VAR}` for `aigw` envsubst | ✅ ready |
-| **Routing** — one primary per route + ordered `fallbacks=[...]` chain | ✅ ready |
+| **Routing** — primary + ordered `fallbacks=[...]` chain | ✅ ready |
 | **Retry / failover** — `RetryPolicy` → aigw `BackendTrafficPolicy` (attempts, per-retry timeout, backoff, product-level reasons) | ✅ ready |
 | **Binary management** — auto-download of the pinned `aigw` on first call | ✅ ready |
 | **Providers** — Bedrock, Azure, Vertex, Cohere, AWSAnthropic, GCPAnthropic | 🚧 gated (builder accepts, renderer errors clearly) |
-| **Routing** — weighted `Split`, differing `RetryPolicy` per route | 🚧 gated |
+| **Routing** — weighted `Split` (primary or any fallback tier), combined with the fallback chain | ✅ ready |
+| **Routing** — differing `RetryPolicy` per route | 🚧 gated |
 | **Policies** — `Budget`, custom `Timeouts` | 🚧 gated |
 | **Outputs** — `render_k8s()` / `apply()` / `deploy()` / `diff()` | 🚧 stubs |
 
@@ -242,7 +243,7 @@ Alpha. Shipped today:
 Coming, roughly in order:
 
 1. **Bedrock renderer** (three AWS credential modes).
-2. **Timeouts**, weighted Split, aliases.
+2. **Timeouts**, aliases.
 3. **Cost Analysis Center** — versioned
    [price sheets](src/envoyai/_internal/prices/), ingestion of
    per-request token counts emitted by the gateway, aggregation by

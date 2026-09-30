@@ -321,33 +321,27 @@ class Gateway:
         self._validate()
         yaml_text = render_yaml(self)
         config_path = aigw_process.write_config(yaml_text)
+        log_path = aigw_process.log_path_for(config_path)
         proc = aigw_process.spawn_background(
             config_path, admin_port=admin_port, debug=debug
         )
         try:
             aigw_process.probe_ready(self.port, timeout_s=ready_timeout_s)
         except Exception as e:
-            stderr_text = ""
-            if proc.stderr:
-                import os
-                try:
-                    os.set_blocking(proc.stderr.fileno(), False)
-                    stderr_bytes = proc.stderr.read()
-                    if stderr_bytes:
-                        stderr_text = stderr_bytes.decode("utf-8", errors="replace")
-                except Exception as le:
-                    stderr_text = f"<failed to read stderr: {le}>"
+            log_tail = aigw_process.read_log_tail(log_path)
             aigw_process.stop_background(proc)
             config_path.unlink(missing_ok=True)
-            if stderr_text:
+            log_path.unlink(missing_ok=True)
+            if log_tail:
                 raise LocalRunError(
                     f"Gateway failed to start (aigw did not become ready on port {self.port}). "
-                    f"aigw stderr:\n{stderr_text}"
+                    f"Last aigw output:\n{log_tail}"
                 ) from e
             raise
         run = LocalRun(
             port=self.port,
             admin_port=admin_port,
+            log_path=log_path,
             _proc=proc,
             _config_path=config_path,
         )

@@ -23,6 +23,8 @@ __all__ = [
     "find_aigw",
     "write_config",
     "spawn_background",
+    "log_path_for",
+    "read_log_tail",
     "run_foreground",
     "probe_ready",
 ]
@@ -49,6 +51,11 @@ def write_config(yaml_text: str, *, prefix: str = "envoyai-") -> Path:
     return Path(path)
 
 
+def log_path_for(config_path: Path) -> Path:
+    """Where :func:`spawn_background` writes aigw's output for ``config_path``."""
+    return config_path.with_suffix(".log")
+
+
 def spawn_background(
     config_path: Path,
     *,
@@ -56,17 +63,36 @@ def spawn_background(
     debug: bool,
     env: dict[str, str] | None = None,
 ) -> subprocess.Popen[bytes]:
-    """Start ``aigw run`` as a background subprocess."""
+    """Start ``aigw run`` as a background subprocess.
+
+    aigw's stderr (Envoy and controller logs) goes to
+    :func:`log_path_for` ``(config_path)``. It must not be a pipe: nothing
+    reads a pipe while the gateway is healthy, so once the OS buffer fills
+    (64 KiB on macOS, a few seconds of traffic with ``--debug``) aigw blocks
+    on write and stops serving requests.
+    """
     aigw = find_aigw()
     cmd: list[str] = [str(aigw), "run", str(config_path), "--admin-port", str(admin_port)]
     if debug:
         cmd.append("--debug")
-    return subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        env={**os.environ, **(env or {})},
-    )
+    with open(log_path_for(config_path), "ab") as log:
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=log,
+            env={**os.environ, **(env or {})},
+        )
+
+
+def read_log_tail(path: Path, *, max_bytes: int = 16384) -> str:
+    """Return up to the last ``max_bytes`` of ``path``, or ``""`` if unreadable."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - max_bytes))
+            return f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def run_foreground(

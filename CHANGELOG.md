@@ -117,6 +117,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   differentiators, and a flat index of `examples/`.
 - Smoke tests covering the public surface and the README example.
 
+### Fixed
+- `Gateway.local()` no longer freezes the gateway once aigw has logged about
+  64 KiB. aigw's stderr went to a pipe that was only read on startup failure,
+  so a full buffer blocked aigw mid-traffic; with `debug=True` this happened
+  within a few requests. Logs now go to a file, exposed as `LocalRun.log_path`,
+  and the tail of that file is included when the gateway fails to start.
+
 ### Changed
 - `Gateway` no longer takes a required `namespace`; the `namespace` kwarg
   moved to `render_k8s()` / `apply()` / `deploy()` / `diff()` where the

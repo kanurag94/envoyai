@@ -160,3 +160,66 @@ def test_local_validates_before_spawning(mocked_aigw: dict[str, Any]) -> None:
         gw.local()
     # aigw was never invoked.
     assert mocked_aigw["spawn_calls"] == []
+
+
+def test_spawn_background_logs_to_file_not_pipe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A PIPE nobody drains fills up and freezes aigw mid-traffic."""
+    import subprocess
+
+    import envoyai._internal.aigw_process as aigw_process
+
+    seen: dict[str, Any] = {}
+
+    def fake_popen(cmd: list[str], **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        kwargs["stderr"].write(b"envoy says hi\n")
+        return _FakeProc()
+
+    monkeypatch.setattr(aigw_process, "find_aigw", lambda: Path("/fake/aigw"))
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    config_path = tmp_path / "gw.yaml"
+    aigw_process.spawn_background(config_path, admin_port=1064, debug=True)
+
+    assert seen["stderr"] is not subprocess.PIPE
+    assert aigw_process.log_path_for(config_path).read_bytes() == b"envoy says hi\n"
+
+
+def test_local_readiness_failure_reports_aigw_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import envoyai._internal.aigw_process as aigw_process
+
+    proc = _FakeProc()
+    logs: list[Path] = []
+
+    monkeypatch.setattr(aigw_process, "find_aigw", lambda: Path("/fake/aigw"))
+
+    def spawn(config_path: Path, **_: Any) -> Any:
+        log = aigw_process.log_path_for(config_path)
+        log.write_text("error: unsupported RetryOn trigger\n")
+        logs.append(log)
+        return proc
+
+    def probe(port: int, **_: Any) -> None:
+        raise ea.errors.LocalRunError("timed out")
+
+    monkeypatch.setattr(aigw_process, "spawn_background", spawn)
+    monkeypatch.setattr(aigw_process, "probe_ready", probe)
+
+    with pytest.raises(ea.errors.LocalRunError, match="unsupported RetryOn trigger"):
+        _openai_gw().local()
+    assert proc.terminated is True
+    assert all(not p.exists() for p in logs)
+
+
+def test_local_run_exposes_and_cleans_up_log_path(mocked_aigw: dict[str, Any]) -> None:
+    run = _openai_gw().local()
+    assert run.log_path is not None
+    assert run.log_path == run._config_path.with_suffix(".log")
+    run.log_path.write_text("x")
+    log_path = run.log_path
+    run.stop()
+    assert not log_path.exists()

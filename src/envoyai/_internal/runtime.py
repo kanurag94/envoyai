@@ -20,12 +20,15 @@ class LocalRun:
     """Handle for a running gateway.
 
     ``port`` is the HTTP port clients post to (OpenAI-compatible).
-    ``admin_port`` is Envoy's admin endpoint. ``_proc`` and ``_config_path``
-    are populated when the runtime started an ``aigw`` subprocess for us.
+    ``admin_port`` is Envoy's admin endpoint. ``log_path`` is the file aigw
+    writes its logs to while running (removed by :meth:`stop`). ``_proc`` and
+    ``_config_path`` are populated when the runtime started an ``aigw``
+    subprocess for us.
     """
 
     port: int = 1975
     admin_port: int = 1064
+    log_path: Optional[Path] = None
     _proc: Optional[subprocess.Popen[bytes]] = None
     _config_path: Optional[Path] = field(default=None, repr=False)
 
@@ -56,3 +59,9 @@ class LocalRun:
             except OSError:
                 pass
             self._config_path = None
+        if self.log_path is not None:
+            try:
+                self.log_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.log_path = None
